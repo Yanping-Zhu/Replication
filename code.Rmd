@@ -1,0 +1,469 @@
+---
+title: "Replication of Fama and French (2010, JF)"
+output: html_notebook
+---
+
+
+```{r setup, include = FALSE}
+library(MatchIt)
+library(plyr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(zoo)
+library(broom)
+library(timereg)
+library(plm)
+library(lfe)
+library(aTSA)
+library(foreign)
+library(readr)
+library(lmtest)
+library(sandwich)
+library(readstata13)
+library(fixest)
+library(fastDummies)
+library(ivmodel)
+library(panelr)
+library(latticeExtra)
+library(reshape2)
+
+```
+
+```{r}
+setwd('/Users/yanpingzhu/Desktop/Courses/BUSI 525 Topics in Financial Markets Research/Replication')
+```
+
+
+```{r}
+#fund summary data (yearly)
+fund_summ <- read.csv("./Data/fund_summ.csv", header = TRUE)
+
+df_fund_summ <- fund_summ %>% 
+  #create date variable
+  mutate(caldt          = as.Date(as.character(caldt), format="%Y%m%d"),
+         year           = year(caldt)) %>% 
+        # first_offer_dt = as.Date(as.character(first_offer_dt), format = "%Y%m%d")) %>% 
+  #include only funds that invest in US common stocks (obj_cd = ED)
+  mutate(obj_cd  = str_sub(crsp_obj_cd, 1,2)) %>% 
+  filter(obj_cd  == "ED") %>% 
+  #exclude index funds
+  filter(index_fund_flag == "") %>% 
+  select(crsp_fundno, fund_name, year, exp_ratio) 
+
+
+#fund return and ff factors data (monthly)
+ret_ff <- read.csv("./Data/ret_ff.csv", header = TRUE)
+
+df_fund_ret <- ret_ff %>% 
+  mutate(#create date variables
+         caldt          = as.Date(as.character(caldt), format="%Y%m%d"),
+         year           = year(caldt),
+         ym             = as.yearmon(caldt),
+         #return and net asset value
+         mtna           = as.numeric(mtna),
+         mret           = as.numeric(mret)) %>% 
+  filter(!is.na(mret)) %>% 
+  select(-c(dateff:end_dt))
+  
+```
+
+```{r}
+
+winsorize_x = function(x, cut = 0.001){
+  cut_point_top <- quantile(x, 1 - cut, na.rm = T)
+  cut_point_bottom <- quantile(x, cut, na.rm = T)
+  i = which(x >= cut_point_top) 
+  x[i] = cut_point_top
+  j = which(x <= cut_point_bottom) 
+  x[j] = cut_point_bottom
+  return(x)
+}
+
+df_ret_summ <- df_fund_summ %>% 
+  left_join(df_fund_ret, by = c("crsp_fundno", "year")) %>% 
+  filter(!is.na(mret)) %>% 
+  filter(!is.na(mtna)) %>% 
+  #fill in the exp_ratio based on mtna
+  arrange(ym, mtna) %>% 
+  mutate(exp_ratio = replace(exp_ratio, exp_ratio <= 0, NA)
+         ) %>% 
+#  filter(!is.na(exp_ratio)) %>% 
+  group_by(ym) %>% 
+  fill(exp_ratio, .direction = "downup") %>% 
+  ungroup() %>% 
+  mutate(mexp_ratio = exp_ratio/12) %>% 
+  select(-c(fund_name, exp_ratio))
+  
+
+
+dff_ret_summ <- df_ret_summ %>% 
+  arrange(crsp_fundno, year, ym) %>% 
+  group_by(ym) %>% 
+  mutate(n_mret    = mret - mexp_ratio,
+         agg_mtna  = sum(mtna, na.rm = TRUE),
+         weight    = mtna/agg_mtna,
+         weight    = dplyr::lag(weight,1)) %>% 
+  filter(!is.na(weight)) %>% 
+  summarise(year      = year,
+            mret_vw   = sum(weight * (mret-rf), na.rm = TRUE),
+            mret_ew   = mean((mret-rf), na.rm = TRUE),
+            n_mret_vw = sum(weight * (n_mret-rf),  na.rm = TRUE),
+            n_mret_ew = mean((n_mret-rf), na.rm = TRUE),
+            mktrf     = mktrf * 100,
+            smb       = smb * 100,
+            hml       = hml * 100,
+            umd       = umd * 100,
+            rf        = rf) %>% 
+  #select(-agg_mtna) %>% 
+  unique() %>% 
+  mutate(mretrf_vw   = mret_vw,
+         mretrf_ew   = mret_ew,
+         n_mretrf_vw = n_mret_vw,
+         n_mretrf_ew = n_mret_ew) %>% 
+  filter(ym <= "Sep 2006")
+```
+
+```{r}
+vw_reg_one <- lm(mretrf_vw ~ mktrf, data = dff_ret_summ %>% mutate(mretrf_vw = mretrf_vw * 100)
+                 )
+vw_reg_three <- lm(mretrf_vw ~ mktrf + smb + hml, data = dff_ret_summ %>% mutate(mretrf_vw = mretrf_vw * 100)
+                   )
+vw_reg_four <- lm(mretrf_vw ~ mktrf + smb + hml + umd, data = dff_ret_summ %>% mutate(mretrf_vw = mretrf_vw * 100)
+                  )
+
+net_vw_reg_one <- lm(n_mretrf_vw ~ mktrf, data = dff_ret_summ %>% mutate(n_mretrf_vw = n_mretrf_vw * 100)
+                     )
+net_vw_reg_three <- lm(n_mretrf_vw ~ mktrf + smb + hml, data = dff_ret_summ %>% mutate(n_mretrf_vw = n_mretrf_vw * 100)
+                       )
+net_vw_reg_four <- lm(n_mretrf_vw ~ mktrf + smb + hml + umd, data = dff_ret_summ %>% mutate(n_mretrf_vw = n_mretrf_vw * 100)
+                      )
+
+stargazer::stargazer(vw_reg_one, vw_reg_three, vw_reg_four, net_vw_reg_one, net_vw_reg_three, net_vw_reg_four, type = "text",report = "vct*")
+
+```
+
+```{r}
+ew_reg_one <- lm(mretrf_ew ~ mktrf, data = dff_ret_summ %>% mutate(mretrf_ew = mretrf_ew * 100)
+                 )
+ew_reg_three <- lm(mretrf_ew ~ mktrf + smb + hml, data = dff_ret_summ %>% mutate(mretrf_ew = mretrf_ew * 100)
+                   )
+ew_reg_four <- lm(mretrf_ew ~ mktrf + smb + hml + umd, data = dff_ret_summ %>% mutate(mretrf_ew = mretrf_ew * 100)
+                  )
+
+net_ew_reg_one <- lm(n_mretrf_ew ~ mktrf, data = dff_ret_summ %>% mutate(n_mretrf_ew = n_mretrf_ew * 100)
+                     )
+net_ew_reg_three <- lm(n_mretrf_ew ~ mktrf + smb + hml, data = dff_ret_summ %>% mutate(n_mretrf_ew = n_mretrf_ew * 100)
+                       )
+net_ew_reg_four <- lm(n_mretrf_ew ~ mktrf + smb + hml + umd, data = dff_ret_summ %>% mutate(n_mretrf_ew = n_mretrf_ew * 100)
+                      )
+
+stargazer::stargazer(ew_reg_one, ew_reg_three, ew_reg_four, net_ew_reg_one, net_ew_reg_three, net_ew_reg_four, type = "text",report = "vct*")
+
+```
+
+
+#Simulation
+
+```{r}
+
+five_mil <- df_fund_summ %>% 
+  left_join(df_fund_ret, by = c("crsp_fundno", "year")) %>% 
+  filter(!is.na(mret)) %>% 
+  select(crsp_fundno,year,ym,mtna) %>% 
+  group_by(crsp_fundno, year) %>% 
+  mutate(max_tna = max(mtna, na.rm = TRUE)) %>% 
+  filter(max_tna >0) %>% 
+  ungroup() %>% 
+  mutate(in_sample = case_when(year == 1984 & max_tna > 2.5 ~ "Y",
+                               year == 1990 & max_tna > 3.2 ~ "Y",
+                               year == 1995 & max_tna > 3.7 ~ "Y",
+                               year == 2000 & max_tna > 4.2 ~ "Y",
+                               year == 2005 & max_tna > 4.8 ~ "Y",
+                               TRUE ~ "N"
+                               )) %>% 
+  filter(in_sample == "Y") %>% 
+  select(crsp_fundno) %>% 
+  unique()
+
+funds_5mi <- five_mil$crsp_fundno
+
+
+df_1 <- df_fund_summ %>% 
+  left_join(df_fund_ret, by = c("crsp_fundno", "year")) %>% 
+  filter(!is.na(mret)) %>% 
+  filter(!is.na(mtna)) %>% 
+  #fill in the exp_ratio based on mtna
+  arrange(ym, mtna) %>% 
+  mutate(exp_ratio = replace(exp_ratio, exp_ratio <= 0, NA)
+         ) %>% 
+#  filter(!is.na(exp_ratio)) %>% 
+  group_by(ym) %>% 
+  fill(exp_ratio, .direction = "downup") %>% 
+  ungroup() %>% 
+  mutate(mexp_ratio = exp_ratio/12) %>% 
+  select(-c(fund_name, exp_ratio, mtna, caldt)) %>% 
+  filter(crsp_fundno %in% funds_5mi) %>% 
+  filter(ym <= "Sep 2006") %>% 
+  group_by(crsp_fundno) %>% 
+  mutate(count = n()) %>% 
+  filter(count >= 60)
+
+df_1 <- df_1 %>% 
+  select(-count) %>% 
+  mutate(g_ret_ex = mret - rf,
+         n_ret_ex = mret - rf - mexp_ratio) %>% 
+  select(-c(mret, mexp_ratio)) %>% 
+  arrange(crsp_fundno, ym)
+
+#estimation for each fund 
+fit_per_fund_1n <- dlply(df_1, "crsp_fundno", function(df) lm(n_ret_ex ~ mktrf + smb + hml, data = df))
+fitted_1n <- ldply(fit_per_fund_1n,tidy) %>% 
+  filter(term == "(Intercept)") %>% 
+  select(crsp_fundno, alp_n = estimate, t_n = statistic)
+
+
+fit_per_fund_1g <- dlply(df_1, "crsp_fundno", function(df) lm(g_ret_ex ~ mktrf + smb + hml, data = df))
+fitted_1g <- ldply(fit_per_fund_1g,tidy) %>% 
+  filter(term == "(Intercept)") %>% 
+  select(crsp_fundno, alp_g = estimate, t_g = statistic)
+
+df_1_boot <- df_1 %>% 
+  left_join(fitted_1n %>% select(alp_n, crsp_fundno), by = "crsp_fundno") %>% 
+  left_join(fitted_1g %>% select(alp_g, crsp_fundno), by = "crsp_fundno") %>% 
+  mutate(n_ret_ex_boot = n_ret_ex - alp_n,
+         g_ret_ex_boot = g_ret_ex - alp_g)
+
+
+```
+
+
+```{r}
+
+#ym <- unique(df_1_boot$ym)
+#N_5 = length(unique(df_1_boot$crsp_fundno))
+
+boot <- function(){
+
+  #sample 273 months fund by fund  
+  df_boot_1 <- df_1_boot %>%
+    select(-year) %>% 
+    group_by(crsp_fundno) %>% 
+    slice_sample(n=273, replace = TRUE)
+    
+  #bootstrap the time index for each fund
+  # ym_boot_1 <- sample(ym, 273, replace = TRUE) 
+  # ym_boot_1 <- sort(ym_boot_1)
+  # ym_boot_1 <- rep(ym_boot_1, N_5)
+   
+  # ym_boot_1_df <- data.frame(crsp_fundno = unique(df_1_boot$crsp_fundno), ym = ym_boot_1) %>% 
+  #   mutate(ym = as.yearmon(ym))
+   
+  #obtain the bootstrapped data 
+  # df_boot_1 <- ym_boot_1_df %>% 
+  #   left_join(df_1_boot %>% select(-umd), by = c("crsp_fundno","ym")) %>% 
+  #   na.omit()
+
+#estimate the model using the bootstrap time-series
+ fit_boot_1n <- dlply(df_boot_1, "crsp_fundno", function(df) lm(n_ret_ex_boot ~ mktrf + smb + hml , data = df))
+
+
+ fitted_boot_1n <- ldply(fit_boot_1n,tidy) %>% 
+    filter(term == '(Intercept)') %>% 
+    select(crsp_fundno, statistic) %>% 
+    rename(t_bn=statistic)
+ 
+ 
+ fit_boot_1g <- dlply(df_boot_1, "crsp_fundno", function(df) lm(g_ret_ex_boot ~ mktrf + smb + hml , data = df))
+
+
+ fitted_boot_1g <- ldply(fit_boot_1g,tidy) %>% 
+    filter(term == '(Intercept)') %>% 
+    select(crsp_fundno, statistic) %>% 
+    rename(t_bg=statistic)
+ 
+ fitted_boot_1 <- fitted_boot_1n %>% 
+   left_join(fitted_boot_1g, by = "crsp_fundno")
+ 
+}
+```
+
+
+```{r}
+boot_1_out <- replicate(n=100, boot(), simplify = FALSE)  
+boot_1_res <- bind_rows(boot_1_out, .id = "sample")
+
+write.csv(boot_1_res, "./Results/boot_1_res.csv")
+```
+
+# Replication of Figure 1 and Figure 2
+```{r}
+boot_1_plot_ave <- boot_1_res %>% 
+  select(sample,crsp_fundno,t_bn, t_bg) %>% 
+  group_by(sample) %>% 
+  mutate(rank_n = rank(t_bn),
+         rank_g = rank(t_bg)) %>% 
+  ungroup() %>% 
+  group_by(rank_n) %>% 
+  mutate(ave_n = mean(t_bn)) %>% 
+  ungroup() %>% 
+  group_by(rank_g) %>% 
+  mutate(ave_g = mean(t_bg)) %>% 
+  ungroup() %>% 
+  select(rank_n, ave_n, rank_g, ave_g) 
+
+boot_1_plot_ave_n <- boot_1_plot_ave %>% 
+  select(rank_n, ave_n) %>% 
+  unique()
+
+boot_1_plot_ave_g <- boot_1_plot_ave %>% 
+  select(rank_g, ave_g) %>% 
+  unique()
+
+plot_1 <- data.frame(actual = fitted_1n$t_n, simulated = boot_1_plot_ave_n$ave_n)
+
+m_plot_1 <- melt(plot_1)
+p1 <- ggplot(m_plot_1, aes(x = value)) + stat_ecdf(aes(colour = variable)) +
+  xlim(-4,4)+
+  labs(y = "", x = "")
+#ecdfplot(~ actual + simulated, data=plot_1, auto.key=list(space='right'))
+
+plot_2 <- data.frame(actual = fitted_1g$t_g, simulated = boot_1_plot_ave_g$ave_g)
+#ecdfplot(~ actual + simulated, data=plot_2, auto.key=list(space='right'))
+
+m_plot_2 = melt(plot_2)
+p2 <- ggplot(m_plot_2, aes(x = value)) + stat_ecdf(aes(colour = variable)) +
+  xlim(-4,4)+
+  labs(y = "", x = "")
+
+p1
+p2
+         
+```
+
+
+#Find the percentiles
+```{r}
+
+# net 
+percent_1_n_sim <- quantile(plot_1$simulated, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))
+percent_1_n_act <- quantile(plot_1$actual, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))
+
+tb3_1 <- data.frame(percent_1_n_sim, percent_1_n_act)
+
+# gross   
+percent_1_g_sim <- quantile(plot_2$simulated, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))
+percent_1_g_act <- quantile(plot_2$actual, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))
+
+tb3_2 <- data.frame(percent_1_g_sim, percent_1_g_act)
+
+stargazer::stargazer(tb3_1, digits= 2)  
+
+
+```
+
+```{r}
+
+boot2 <- function(sigma){
+alp_draw <- replicate(n=length(unique(df_1_boot$crsp_fundno)), rnorm(23, mean = 0, sd = sigma/sqrt(12)))
+
+alp_draw <- data.frame(unlist(alp_draw))
+
+alp_draw <- data.frame(unlist(alp_draw))
+
+year <- rep(unique(df_1_boot$year), length(unique(df_1_boot$crsp_fundno)))
+crsp_fundno <- rep(unique(df_1_boot$crsp_fundno), each = 23)
+
+alp_true <- data.frame(crsp_fundno, year, alp_draw$unlist.alp_draw.) %>% rename(true_alp = alp_draw.unlist.alp_draw.)
+#take df_1_boot
+df_2_boot <- df_1_boot %>% 
+  left_join(alp_true, by = c("crsp_fundno","year")) %>% 
+  mutate(g_ret_ex_boot = g_ret_ex_boot + true_alp)
+
+df_boot_2 <- df_2_boot %>%
+  select(-year) %>% 
+  group_by(crsp_fundno) %>% 
+  slice_sample(n=273, replace = TRUE)
+
+fit_boot_2 <- dlply(df_boot_2, "crsp_fundno", function(df) lm(g_ret_ex_boot ~ mktrf + smb + hml , data = df))
+
+
+fitted_boot_2 <- ldply(fit_boot_2,tidy) %>% 
+  filter(term == '(Intercept)') %>% 
+  select(crsp_fundno, statistic) %>% 
+  rename(t_b2=statistic) 
+}
+```
+
+```{r}
+boot_2_0.5 <- replicate(n=100, boot2(sigma=0.5), simplify = FALSE)  
+boot_2_0.5res <- bind_rows(boot_2_0.5, .id = "sample")
+
+df_boot2_0.5 <- boot_2_0.5res %>% 
+  group_by(sample) %>% 
+  mutate(rank = rank(t_b2)) %>%
+  ungroup() %>% 
+  group_by(rank) %>% 
+  mutate(ave_t_0.5 = mean(t_b2)) %>% 
+  ungroup() %>% 
+  select(ave_t_0.5) %>% 
+  unique()
+  
+
+write.csv(boot_2_0.5res, "./Results/boot_2_0.5res.csv")
+```
+
+```{r}
+boot_2_1 <- replicate(n=100, boot2(sigma=1), simplify = FALSE)  
+boot_2_1res <- bind_rows(boot_2_1, .id = "sample")
+
+write.csv(boot_2_1res, "./Results/boot_2_1res.csv")
+
+
+df_boot2_1 <- boot_2_1res %>% 
+  group_by(sample) %>% 
+  mutate(rank = rank(t_b2)) %>% 
+  ungroup() %>% 
+  group_by(rank) %>% 
+  mutate(ave_t_1 = mean(t_b2)) %>% 
+  ungroup() %>% 
+  select(ave_t_1) %>% 
+  unique()
+
+```
+
+```{r}
+boot_2_1.5 <- replicate(n=100, boot2(sigma = 1.5), simplify = FALSE)
+boot_2_1.5res <- bind_rows(boot_2_1.5, .id = "sample")
+
+write.csv(boot_2_1.5res, "./Results/boot_2_1.5res.csv")
+
+
+df_boot2_1.5 <- boot_2_1.5res %>% 
+  group_by(sample) %>% 
+  mutate(rank = rank(t_b2)) %>% 
+  ungroup() %>% 
+  group_by(rank) %>% 
+  mutate(ave_t_1.5 = mean(t_b2)) %>% 
+  ungroup() %>% 
+  select(ave_t_1.5) %>% 
+  unique()
+
+```
+
+```{r}
+
+tb_4 <- data.frame(quantile(plot_1$actual, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95)),
+                   quantile(df_boot2_0.5$ave_t_0.5, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95)),
+                   quantile(df_boot2_1$ave_t_1, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95)),
+                   quantile(df_boot2_1.5$ave_t_1.5, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))) 
+  colnames(tb_4) <- c("actual", "0.5","1", "1.5")
+percent_1_n_sim <- quantile(plot_1$simulated, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))
+  
+percent_1_n_act <- quantile(plot_1$actual, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95))
+```
+
+
+
+
+
