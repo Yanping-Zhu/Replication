@@ -34,7 +34,9 @@ library(reshape2)
 setwd('/Users/yanpingzhu/Desktop/Courses/BUSI 525 Topics in Financial Markets Research/Replication')
 ```
 
+# Replication of Table 2
 
+## Load fund summary and return data, and fama french factors
 ```{r}
 #fund summary data (yearly)
 fund_summ <- read.csv("./Data/fund_summ.csv", header = TRUE)
@@ -68,17 +70,9 @@ df_fund_ret <- ret_ff %>%
   
 ```
 
+## Merge the data sets and generate data for regressions 
 ```{r}
 
-winsorize_x = function(x, cut = 0.001){
-  cut_point_top <- quantile(x, 1 - cut, na.rm = T)
-  cut_point_bottom <- quantile(x, cut, na.rm = T)
-  i = which(x >= cut_point_top) 
-  x[i] = cut_point_top
-  j = which(x <= cut_point_bottom) 
-  x[j] = cut_point_bottom
-  return(x)
-}
 
 df_ret_summ <- df_fund_summ %>% 
   left_join(df_fund_ret, by = c("crsp_fundno", "year")) %>% 
@@ -124,6 +118,8 @@ dff_ret_summ <- df_ret_summ %>%
   filter(ym <= "Sep 2006")
 ```
 
+
+## Regression results for Table 2 
 ```{r}
 vw_reg_one <- lm(mretrf_vw ~ mktrf, data = dff_ret_summ %>% mutate(mretrf_vw = mretrf_vw * 100)
                  )
@@ -162,8 +158,9 @@ stargazer::stargazer(ew_reg_one, ew_reg_three, ew_reg_four, net_ew_reg_one, net_
 
 ```
 
+# Replication of Table 3 and Figures 1 and 2
 
-#Simulation
+## Generate the data for bootstrap draws 
 
 ```{r}
 
@@ -237,7 +234,7 @@ df_1_boot <- df_1 %>%
 
 ```
 
-
+## Bootstrap function 
 ```{r}
 
 #ym <- unique(df_1_boot$ym)
@@ -288,7 +285,7 @@ boot <- function(){
 }
 ```
 
-
+## Bootstrap 100 times and collect the results 
 ```{r}
 boot_1_out <- replicate(n=100, boot(), simplify = FALSE)  
 boot_1_res <- bind_rows(boot_1_out, .id = "sample")
@@ -296,7 +293,7 @@ boot_1_res <- bind_rows(boot_1_out, .id = "sample")
 write.csv(boot_1_res, "./Results/boot_1_res.csv")
 ```
 
-# Replication of Figure 1 and Figure 2
+## Replication of Figure 1 and Figure 2
 ```{r}
 boot_1_plot_ave <- boot_1_res %>% 
   select(sample,crsp_fundno,t_bn, t_bg) %>% 
@@ -342,7 +339,7 @@ p2
 ```
 
 
-#Find the percentiles
+## Replication of Table 3 
 ```{r}
 
 # net 
@@ -362,6 +359,10 @@ stargazer::stargazer(tb3_1, digits= 2)
 
 ```
 
+
+# Replication of Table 4
+
+## Bootstrap function 
 ```{r}
 
 boot2 <- function(sigma){
@@ -395,6 +396,7 @@ fitted_boot_2 <- ldply(fit_boot_2,tidy) %>%
 }
 ```
 
+## Replicate 100 times for $\sigmas$ of 0.5, 1.0 and 1.5
 ```{r}
 boot_2_0.5 <- replicate(n=100, boot2(sigma=0.5), simplify = FALSE)  
 boot_2_0.5res <- bind_rows(boot_2_0.5, .id = "sample")
@@ -451,6 +453,7 @@ df_boot2_1.5 <- boot_2_1.5res %>%
 
 ```
 
+## Collect the results and generate Table 4
 ```{r}
 
 tb_4 <- data.frame(quantile(plot_1$actual, c(.05, .1, .2,.3,.4,.5,.6,.7,.8,.9,.95)),
